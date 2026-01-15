@@ -107,13 +107,10 @@ public class UserSessionChannelInterceptor implements ChannelInterceptor {
      * userId로 sessionId 조회
      */
     public String getSessionIdByUserId(String userId) {
-        log.debug("Looking up sessionId for userId: {}, current map: {}", userId, sessionUserMap);
-        String sessionId = sessionUserMap.entrySet().stream()
+        return sessionUserMap.entrySet().stream()
                 .filter(entry -> entry.getValue().equals(userId))
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
-        log.debug("Found sessionId: {} for userId: {}", sessionId, userId);
-        return sessionId;
     }
 }

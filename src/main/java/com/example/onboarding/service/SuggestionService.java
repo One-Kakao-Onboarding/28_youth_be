@@ -377,14 +377,11 @@ public class SuggestionService {
                             DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN)))
                     .build();
 
-            log.info("Sending recommendation prompt - userId: {}, analysisId: {}", userId, analysisId);
-            log.info("Prompt DTO: {}", promptDto);
-
             // /sub/room/1로 브로드캐스트 (채팅 메시지와 동일한 경로)
             String destination = "/sub/room/" + DEFAULT_ROOM_ID;
             messagingTemplate.convertAndSend(destination, promptDto);
 
-            log.info("Recommendation prompt broadcast - destination: {}, analysisId: {}", destination, analysisId);
+            log.info("Recommendation prompt sent - userId: {}, analysisId: {}", userId, analysisId);
 
         } catch (Exception e) {
             log.error("Failed to send recommendation prompt to user: {}", userId, e);

@@ -14,11 +14,11 @@ spring:
   jpa:
     hibernate:
       ddl-auto: update
-    show-sql: true
+    show-sql: false
     open-in-view: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
         dialect: org.hibernate.dialect.PostgreSQLDialect
     defer-datasource-initialization: true
 
@@ -36,7 +36,6 @@ anthropic:
 # Logging Configuration
 logging:
   level:
-    com.example.onboarding.websocket: DEBUG
-    com.example.onboarding.service: DEBUG
-    org.springframework.messaging: DEBUG
-    org.springframework.web.socket: DEBUG
+    com.example.onboarding: INFO
+    org.springframework.messaging: INFO
+    org.springframework.web.socket: INFO

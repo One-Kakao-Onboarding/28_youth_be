@@ -2,6 +2,9 @@ spring:
   application:
     name: onboarding-hackathon
 
+  profiles:
+    include: secret
+
   datasource:
     url: jdbc:postgresql://aws-1-ap-south-1.pooler.supabase.com:5432/postgres
     username: postgres.behevazoddktvkfqobui

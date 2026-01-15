@@ -39,22 +39,27 @@ public class UserSessionChannelInterceptor implements ChannelInterceptor {
 
             // CONNECT 명령 처리
             if (StompCommand.CONNECT.equals(command)) {
-                // WebSocket 세션 속성에서 사용자 정보 추출
-                Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+                // STOMP CONNECT 헤더에서 사용자 정보 추출
+                String userId = accessor.getFirstNativeHeader("X-User-Id");
+                String nickname = accessor.getFirstNativeHeader("X-Nickname");
 
-                if (sessionAttributes != null) {
-                    String userId = (String) sessionAttributes.get("userId");
-                    String nickname = (String) sessionAttributes.get("nickname");
+                if (userId != null && nickname != null) {
+                    String sessionId = accessor.getSessionId();
 
-                    if (userId != null && nickname != null) {
-                        String sessionId = accessor.getSessionId();
-
-                        // 세션-사용자 매핑 저장
-                        sessionUserMap.put(sessionId, userId);
-
-                        log.info("STOMP CONNECT - sessionId: {}, userId: {}, nickname: {}",
-                                sessionId, userId, nickname);
+                    // 세션 속성에 사용자 정보 저장
+                    Map<String, Object> sessionAttributes = accessor.getSessionAttributes();
+                    if (sessionAttributes != null) {
+                        sessionAttributes.put("userId", userId);
+                        sessionAttributes.put("nickname", nickname);
                     }
+
+                    // 세션-사용자 매핑 저장
+                    sessionUserMap.put(sessionId, userId);
+
+                    log.info("STOMP CONNECT - sessionId: {}, userId: {}, nickname: {}",
+                            sessionId, userId, nickname);
+                } else {
+                    log.warn("STOMP CONNECT failed - Missing X-User-Id or X-Nickname in STOMP headers");
                 }
             }
             // DISCONNECT 명령 처리

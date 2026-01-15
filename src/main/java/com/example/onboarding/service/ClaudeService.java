@@ -54,7 +54,11 @@ public class ClaudeService {
             String systemPrompt = buildSystemPrompt();
             String userPrompt = buildUserPrompt(conversationContext, currentMessage);
 
-            log.debug("Sending request to Claude API");
+            log.info("Sending request to Claude API with model: {}", model);
+            log.info("API Key present: {}", apiKey != null && !apiKey.isEmpty());
+            if (apiKey != null && apiKey.length() > 10) {
+                log.info("API Key starts with: {}...", apiKey.substring(0, 10));
+            }
 
             // Claude API 요청 본문 생성
             Map<String, Object> requestBody = Map.of(
@@ -70,17 +74,26 @@ public class ClaudeService {
                     )
             );
 
+            log.info("Request body: {}", objectMapper.writeValueAsString(requestBody).substring(0, 200) + "...");
+
             // WebClient로 Claude API 호출
             WebClient webClient = WebClient.builder()
-                    .baseUrl(CLAUDE_API_URL)
+                    .baseUrl("https://api.anthropic.com")
                     .defaultHeader("x-api-key", apiKey)
                     .defaultHeader("anthropic-version", ANTHROPIC_VERSION)
                     .defaultHeader("content-type", "application/json")
                     .build();
 
             String responseBody = webClient.post()
+                    .uri("/v1/messages")
                     .bodyValue(requestBody)
                     .retrieve()
+                    .onStatus(status -> status.is4xxClientError() || status.is5xxServerError(),
+                            clientResponse -> clientResponse.bodyToMono(String.class)
+                                    .map(errorBody -> {
+                                        log.error("Claude API error response: {}", errorBody);
+                                        return new RuntimeException("Claude API error: " + errorBody);
+                                    }))
                     .bodyToMono(String.class)
                     .block();
 

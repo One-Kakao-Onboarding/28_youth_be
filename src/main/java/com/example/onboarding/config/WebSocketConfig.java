@@ -24,13 +24,16 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
 
     /**
      * 메시지 브로커 설정
-     * - /sub: 클라이언트가 구독하는 prefix
+     * - /sub: 클라이언트가 구독하는 prefix (브로드캐스트용)
+     * - /user: 클라이언트가 구독하는 prefix (개인 메시지용)
      * - /pub: 클라이언트가 메시지를 발행하는 prefix
      */
     @Override
     public void configureMessageBroker(MessageBrokerRegistry config) {
         // Simple In-Memory Broker 활성화 (실시간 메시지 브로드캐스팅)
-        config.enableSimpleBroker("/sub");
+        // /sub: 채팅방 메시지 등 브로드캐스트
+        // /user: 개인별 추천 알림, 맛집 추천, 에러 메시지
+        config.enableSimpleBroker("/sub", "/user");
 
         // 클라이언트가 서버로 메시지 전송 시 사용하는 prefix
         config.setApplicationDestinationPrefixes("/pub");

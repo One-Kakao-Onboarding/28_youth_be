@@ -32,3 +32,11 @@ anthropic:
   model: claude-3-haiku-20240307
   max-tokens: 1024
   temperature: 0.7
+
+# Logging Configuration
+logging:
+  level:
+    com.example.onboarding.websocket: DEBUG
+    com.example.onboarding.service: DEBUG
+    org.springframework.messaging: DEBUG
+    org.springframework.web.socket: DEBUG

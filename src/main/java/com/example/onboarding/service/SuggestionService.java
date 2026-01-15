@@ -43,6 +43,7 @@ public class SuggestionService {
     private static final int CONTEXT_MESSAGE_LIMIT = 10;
     private static final double CONFIDENCE_THRESHOLD = 0.6;
     private static final int ANALYSIS_CACHE_EXPIRE_MINUTES = 5;
+    private static final Long DEFAULT_ROOM_ID = 1L;  // 기본 채팅방 ID
 
     /**
      * 분석 결과 임시 저장소 (인메모리 캐시)
@@ -306,26 +307,16 @@ public class SuggestionService {
                     .type("card")
                     .message("맛집을 추천해드릴게요!")
                     .cardData(cardData)
-                    .targetUserId(userId)
+                    .targetUserId(userId)  // 클라이언트가 자신의 추천만 처리하도록
                     .time(LocalDateTime.now().format(
                             DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN)))
                     .build();
 
-            // 해당 사용자의 sessionId 조회
-            String sessionId = sessionInterceptor.getSessionIdByUserId(userId);
+            // /sub/room/1로 브로드캐스트
+            String destination = "/sub/room/" + DEFAULT_ROOM_ID;
+            messagingTemplate.convertAndSend(destination, suggestionDto);
 
-            if (sessionId != null) {
-                // Private 메시지 전송
-                messagingTemplate.convertAndSendToUser(
-                        sessionId,
-                        "/queue/suggestions",
-                        suggestionDto
-                );
-
-                log.info("Private suggestion sent - userId: {}, sessionId: {}", userId, sessionId);
-            } else {
-                log.warn("Session not found for userId: {}", userId);
-            }
+            log.info("Suggestion broadcast - userId: {}, destination: {}", userId, destination);
 
         } catch (Exception e) {
             log.error("Failed to send suggestion to user: {}", userId, e);
@@ -386,21 +377,14 @@ public class SuggestionService {
                             DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN)))
                     .build();
 
-            // 해당 사용자의 sessionId 조회
-            String sessionId = sessionInterceptor.getSessionIdByUserId(userId);
+            log.info("Sending recommendation prompt - userId: {}, analysisId: {}", userId, analysisId);
+            log.info("Prompt DTO: {}", promptDto);
 
-            if (sessionId != null) {
-                // Private 메시지 전송 (새로운 채널)
-                messagingTemplate.convertAndSendToUser(
-                        sessionId,
-                        "/queue/recommendation-prompt",
-                        promptDto
-                );
+            // /sub/room/1로 브로드캐스트 (채팅 메시지와 동일한 경로)
+            String destination = "/sub/room/" + DEFAULT_ROOM_ID;
+            messagingTemplate.convertAndSend(destination, promptDto);
 
-                log.info("Recommendation prompt sent - userId: {}, analysisId: {}", userId, analysisId);
-            } else {
-                log.warn("Session not found for userId: {}", userId);
-            }
+            log.info("Recommendation prompt broadcast - destination: {}, analysisId: {}", destination, analysisId);
 
         } catch (Exception e) {
             log.error("Failed to send recommendation prompt to user: {}", userId, e);
@@ -415,21 +399,16 @@ public class SuggestionService {
             Map<String, String> error = Map.of(
                     "type", "error",
                     "message", errorMessage,
+                    "userId", userId,  // 클라이언트가 자신의 에러만 처리하도록
                     "time", LocalDateTime.now().format(
                             DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN))
             );
 
-            String sessionId = sessionInterceptor.getSessionIdByUserId(userId);
+            // /sub/room/1로 브로드캐스트
+            String destination = "/sub/room/" + DEFAULT_ROOM_ID;
+            messagingTemplate.convertAndSend(destination, error);
 
-            if (sessionId != null) {
-                messagingTemplate.convertAndSendToUser(
-                        sessionId,
-                        "/queue/errors",
-                        error
-                );
-
-                log.info("Error message sent - userId: {}, message: {}", userId, errorMessage);
-            }
+            log.info("Error message broadcast - userId: {}, message: {}", userId, errorMessage);
 
         } catch (Exception e) {
             log.error("Failed to send error message to user: {}", userId, e);

@@ -9,6 +9,7 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.stereotype.Component;
 
+import java.security.Principal;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -53,13 +54,34 @@ public class UserSessionChannelInterceptor implements ChannelInterceptor {
                         sessionAttributes.put("nickname", nickname);
                     }
 
+                    // Principal 설정 (sessionId를 principal name으로 사용)
+                    // 이를 통해 Spring STOMP의 User Destination 메커니즘이 정상 작동함
+                    Principal principal = () -> sessionId;
+                    accessor.setUser(principal);
+
                     // 세션-사용자 매핑 저장
                     sessionUserMap.put(sessionId, userId);
 
-                    log.info("STOMP CONNECT - sessionId: {}, userId: {}, nickname: {}",
-                            sessionId, userId, nickname);
+                    log.info("STOMP CONNECT - sessionId: {}, userId: {}, nickname: {}, principal: {}",
+                            sessionId, userId, nickname, principal.getName());
+                    log.info("SessionUserMap updated - size: {}, entries: {}", sessionUserMap.size(), sessionUserMap);
                 } else {
                     log.warn("STOMP CONNECT failed - Missing X-User-Id or X-Nickname in STOMP headers");
+                }
+            }
+            // SUBSCRIBE 명령 처리
+            else if (StompCommand.SUBSCRIBE.equals(command)) {
+                String sessionId = accessor.getSessionId();
+                String userId = sessionUserMap.get(sessionId);
+                String destination = accessor.getDestination();
+                String subscriptionId = accessor.getSubscriptionId();
+
+                log.info("STOMP SUBSCRIBE - sessionId: {}, userId: {}, destination: {}, subscriptionId: {}",
+                        sessionId, userId, destination, subscriptionId);
+
+                // recommendation-prompt 채널 구독 시 특별히 로그 남기기
+                if (destination != null && destination.contains("recommendation-prompt")) {
+                    log.warn("!!! RECOMMENDATION-PROMPT SUBSCRIBED - sessionId: {}, userId: {}", sessionId, userId);
                 }
             }
             // DISCONNECT 명령 처리
@@ -85,10 +107,13 @@ public class UserSessionChannelInterceptor implements ChannelInterceptor {
      * userId로 sessionId 조회
      */
     public String getSessionIdByUserId(String userId) {
-        return sessionUserMap.entrySet().stream()
+        log.debug("Looking up sessionId for userId: {}, current map: {}", userId, sessionUserMap);
+        String sessionId = sessionUserMap.entrySet().stream()
                 .filter(entry -> entry.getValue().equals(userId))
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
+        log.debug("Found sessionId: {} for userId: {}", sessionId, userId);
+        return sessionId;
     }
 }

@@ -20,4 +20,12 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, Long> 
      * @return 메시지 리스트
      */
     List<ChatMessage> findByRoomIdOrderByCreatedAtDesc(Long roomId, Pageable pageable);
+
+    /**
+     * 특정 메시지 이전의 최근 메시지 조회 (대화 컨텍스트용)
+     * @param roomId 채팅방 ID
+     * @param messageId 기준 메시지 ID
+     * @return 메시지 리스트 (최대 10개)
+     */
+    List<ChatMessage> findTop10ByRoomIdAndIdLessThanOrderByIdDesc(Long roomId, Long messageId);
 }

@@ -36,3 +36,5 @@ bin/
 *.log
 *.tmp
 application-local.yml
+application-secret.yml
+.env

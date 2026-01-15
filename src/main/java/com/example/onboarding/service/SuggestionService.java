@@ -1,9 +1,11 @@
 package com.example.onboarding.service;
 
+import com.example.onboarding.dto.ClaudeAnalysisResult;
 import com.example.onboarding.dto.RestaurantDto;
 import com.example.onboarding.dto.SuggestionDto;
 import com.example.onboarding.entity.ChatMessage;
 import com.example.onboarding.entity.Restaurant;
+import com.example.onboarding.repository.ChatMessageRepository;
 import com.example.onboarding.repository.RestaurantRepository;
 import com.example.onboarding.websocket.UserSessionChannelInterceptor;
 import lombok.RequiredArgsConstructor;
@@ -12,12 +14,16 @@ import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 /**
  * 맛집 추천 서비스
- * - LLM 분석 및 맛집 추천 (비동기 처리)
+ * - Claude AI 분석 및 맛집 추천 (비동기 처리)
  */
 @Slf4j
 @Service
@@ -27,10 +33,15 @@ public class SuggestionService {
     private final RestaurantRepository restaurantRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final UserSessionChannelInterceptor sessionInterceptor;
+    private final ClaudeService claudeService;
+    private final ChatMessageRepository chatMessageRepository;
+
+    private static final int CONTEXT_MESSAGE_LIMIT = 10;
+    private static final double CONFIDENCE_THRESHOLD = 0.6;
 
     /**
      * 메시지 분석 및 맛집 추천 (비동기)
-     * - LLM에게 메시지를 보내 의도를 파악하고 맛집을 추천
+     * - Claude AI로 메시지를 분석하여 맛집 추천 필요 여부 판단
      * - 추천 결과를 해당 사용자에게만 Private으로 전송
      *
      * @param message 분석할 메시지
@@ -38,35 +49,56 @@ public class SuggestionService {
     @Async
     public void analyzeMessageAndSuggest(ChatMessage message) {
         try {
-            log.info("Starting LLM analysis for message: {}", message.getId());
+            log.info("Starting Claude analysis for message: {}", message.getId());
 
-            // TODO: 여기서 LLM에게 메시지를 보내 의도를 파악하고, 맛집을 추천함
-            // 1. LLM API 호출 (예: OpenAI, Anthropic Claude 등)
-            // 2. 메시지 내용 분석 (맛집 관련 키워드 추출)
-            // 3. 추출된 키워드로 맛집 검색
-            // 4. LLM에게 검색 결과를 기반으로 추천 메시지 생성 요청
+            // 1. 대화 컨텍스트 가져오기 (최근 10개 메시지)
+            List<String> conversationContext = fetchConversationContext(
+                    message.getRoomId(),
+                    message.getId()
+            );
 
-            // 임시 구현: 메시지에서 간단한 키워드 추출 (판교, 잠실, 합정)
-            String content = message.getContent().toLowerCase();
-            String keyword = extractKeyword(content);
+            // 2. Claude API로 대화 분석
+            ClaudeAnalysisResult analysis = claudeService.analyzeConversation(
+                    conversationContext,
+                    message.getContent()
+            );
 
-            if (keyword != null) {
-                // 키워드로 맛집 검색
-                List<Restaurant> restaurants = restaurantRepository.findByKeywordsContaining(keyword);
+            log.info("Claude analysis result - shouldRecommend: {}, confidence: {}, location: {}",
+                    analysis.isShouldRecommend(),
+                    analysis.getConfidence(),
+                    analysis.getLocation());
 
-                if (!restaurants.isEmpty()) {
-                    // 최대 5개까지만 추천
-                    List<Restaurant> limitedRestaurants = restaurants.stream()
-                            .limit(5)
-                            .collect(Collectors.toList());
-
-                    // 사용자에게 Private 메시지로 전송
-                    sendSuggestionToUser(message.getSenderId().toString(), limitedRestaurants);
-
-                    log.info("Suggestion sent to user: {}, keyword: {}, count: {}",
-                            message.getSenderId(), keyword, limitedRestaurants.size());
-                }
+            // 3. 추천 필요 여부 확인
+            if (!analysis.isShouldRecommend()) {
+                log.info("No recommendation needed for message: {}", message.getId());
+                return;
             }
+
+            if (analysis.getConfidence() < CONFIDENCE_THRESHOLD) {
+                log.info("Confidence too low ({}) for message: {}",
+                        analysis.getConfidence(),
+                        message.getId());
+                return;
+            }
+
+            // 4. 맛집 검색 (수정된 전략)
+            RestaurantSearchResult searchResult = searchRestaurants(analysis, message.getSenderId().toString());
+
+            if (searchResult.isEmpty()) {
+                log.info("No restaurants found for analysis: {}", analysis);
+                return;
+            }
+
+            // 5. 사용자에게 추천 전송
+            sendSuggestionToUser(
+                    message.getSenderId().toString(),
+                    searchResult,
+                    analysis
+            );
+
+            log.info("Suggestion sent to user: {}, count: {}",
+                    message.getSenderId(),
+                    searchResult.getTotalCount());
 
         } catch (Exception e) {
             log.error("Failed to analyze message and suggest restaurants", e);
@@ -74,30 +106,129 @@ public class SuggestionService {
     }
 
     /**
-     * 특정 사용자에게 맛집 추천 전송 (Private Notification)
-     * - SimpMessagingTemplate.convertAndSendToUser를 활용하여 특정 사용자에게만 전송
-     *
-     * @param userId 대상 사용자 ID
-     * @param restaurants 추천 맛집 리스트
+     * 대화 컨텍스트 가져오기
      */
-    private void sendSuggestionToUser(String userId, List<Restaurant> restaurants) {
+    private List<String> fetchConversationContext(Long roomId, Long currentMessageId) {
         try {
-            // Restaurant 엔티티를 DTO로 변환
-            List<RestaurantDto> restaurantDtos = restaurants.stream()
-                    .map(r -> RestaurantDto.builder()
-                            .id(r.getId())
-                            .name(r.getName())
-                            .category(r.getCategory())
-                            .locationText(r.getLocationText())
-                            .description(r.getDescription())
-                            .build())
+            List<ChatMessage> recentMessages = chatMessageRepository
+                    .findTop10ByRoomIdAndIdLessThanOrderByIdDesc(
+                            roomId,
+                            currentMessageId
+                    );
+
+            return recentMessages.stream()
+                    .map(msg -> msg.getSenderNickname() + ": " + msg.getContent())
                     .collect(Collectors.toList());
 
-            // 추천 메시지 생성
+        } catch (Exception e) {
+            log.error("Failed to fetch conversation context", e);
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 맛집 검색 (수정된 전략)
+     * 전략 1: 지역 기반 즐겨찾기 및 상황 기반
+     * 전략 2: 지역 및 상황 기반 랜덤 인기 맛집
+     */
+    private RestaurantSearchResult searchRestaurants(ClaudeAnalysisResult analysis, String userId) {
+        String location = analysis.getLocation();
+        List<String> categories = analysis.getCategories();
+
+        // 전략 1: 즐겨찾기 맛집 (현재는 나중에 구현 예정이므로 빈 리스트)
+        List<Restaurant> favoriteRestaurants = Collections.emptyList();
+        // TODO: 즐겨찾기 기능 구현 시
+        // favoriteRestaurants = favoriteRepository.findByUserIdAndLocationAndCategories(userId, location, categories);
+
+        // 전략 2: 지역 및 상황 기반 랜덤 인기 맛집
+        List<Restaurant> aiRecommendedRestaurants = searchByLocationAndCategories(location, categories);
+
+        return new RestaurantSearchResult(favoriteRestaurants, aiRecommendedRestaurants);
+    }
+
+    /**
+     * 지역 및 카테고리 기반 검색
+     */
+    private List<Restaurant> searchByLocationAndCategories(String location, List<String> categories) {
+        List<Restaurant> restaurants;
+
+        // 지역 기반 검색
+        if (location != null && !location.isEmpty()) {
+            restaurants = restaurantRepository.findByKeywordsContaining(location);
+
+            // 카테고리로 필터링
+            if (categories != null && !categories.isEmpty()) {
+                restaurants = filterByCategories(restaurants, categories);
+            }
+
+            if (!restaurants.isEmpty()) {
+                return restaurants.stream()
+                        .limit(5)
+                        .collect(Collectors.toList());
+            }
+        }
+
+        // Fallback: 카테고리만으로 검색
+        if (categories != null && !categories.isEmpty()) {
+            for (String category : categories) {
+                restaurants = restaurantRepository.findByKeywordsContaining(category);
+                if (!restaurants.isEmpty()) {
+                    return restaurants.stream()
+                            .limit(5)
+                            .collect(Collectors.toList());
+                }
+            }
+        }
+
+        // Last resort: 랜덤 인기 맛집
+        return restaurantRepository.findAll().stream()
+                .limit(5)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 카테고리로 맛집 필터링
+     */
+    private List<Restaurant> filterByCategories(List<Restaurant> restaurants, List<String> categories) {
+        return restaurants.stream()
+                .filter(r -> categories.stream()
+                        .anyMatch(cat -> r.getKeywords() != null && r.getKeywords().contains(cat)))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 특정 사용자에게 맛집 추천 전송 (카드 형식)
+     */
+    private void sendSuggestionToUser(
+            String userId,
+            RestaurantSearchResult searchResult,
+            ClaudeAnalysisResult analysis) {
+        try {
+            // 카드 제목 생성
+            String cardTitle = buildCardTitle(analysis);
+            String cardImage = "/images/restaurant-map.jpg";  // 기본 지도 이미지
+
+            // 즐겨찾기 맛집 DTO 변환
+            List<RestaurantDto> favoriteDtos = convertToDto(searchResult.getFavoriteRestaurants());
+
+            // AI 추천 맛집 DTO 변환
+            List<RestaurantDto> aiRecommendedDtos = convertToDto(searchResult.getAiRecommendedRestaurants());
+
+            // 카드 데이터 생성 (현재는 AI 추천만 표시, 즐겨찾기는 추후 추가)
+            SuggestionDto.CardData cardData = SuggestionDto.CardData.builder()
+                    .title(cardTitle)
+                    .image(cardImage)
+                    .restaurants(aiRecommendedDtos)  // 현재는 AI 추천만
+                    .build();
+
+            // Suggestion DTO 생성
             SuggestionDto suggestionDto = SuggestionDto.builder()
+                    .type("card")
                     .message("맛집을 추천해드릴게요!")
-                    .restaurants(restaurantDtos)
+                    .cardData(cardData)
                     .targetUserId(userId)
+                    .time(LocalDateTime.now().format(
+                            DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN)))
                     .build();
 
             // 해당 사용자의 sessionId 조회
@@ -105,7 +236,6 @@ public class SuggestionService {
 
             if (sessionId != null) {
                 // Private 메시지 전송
-                // "/user/queue/suggestions" 경로로 전송하면, 클라이언트는 "/user/queue/suggestions"를 구독해야 함
                 messagingTemplate.convertAndSendToUser(
                         sessionId,
                         "/queue/suggestions",
@@ -123,13 +253,63 @@ public class SuggestionService {
     }
 
     /**
-     * 메시지에서 키워드 추출 (임시 구현)
-     * - 실제로는 LLM이 분석하여 키워드를 추출해야 함
+     * Restaurant 엔티티를 DTO로 변환
      */
-    private String extractKeyword(String content) {
-        if (content.contains("판교")) return "판교";
-        if (content.contains("잠실")) return "잠실";
-        if (content.contains("합정")) return "합정";
-        return null;
+    private List<RestaurantDto> convertToDto(List<Restaurant> restaurants) {
+        return restaurants.stream()
+                .map(r -> RestaurantDto.builder()
+                        .id(r.getId())
+                        .name(r.getName())
+                        .category(r.getCategory())
+                        .locationText(r.getLocationText())
+                        .address(r.getLocationText())  // address = locationText
+                        .description(r.getDescription())
+                        .rating(r.getRating() != null ? r.getRating() : 4.5)
+                        .image(r.getImageUrl() != null ? r.getImageUrl() : "/images/placeholder-restaurant.jpg")
+                        .distance(r.getDistanceText() != null ? r.getDistanceText() : "거리 정보 없음")
+                        .build())
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * 카드 제목 생성
+     */
+    private String buildCardTitle(ClaudeAnalysisResult analysis) {
+        StringBuilder title = new StringBuilder();
+
+        if (analysis.getLocation() != null && !analysis.getLocation().isEmpty()) {
+            title.append(analysis.getLocation()).append(" ");
+        }
+
+        if (analysis.getCategories() != null && !analysis.getCategories().isEmpty()) {
+            title.append(analysis.getCategories().get(0)).append(" ");
+        }
+
+        title.append("맛집 추천 리스트");
+
+        return title.toString();
+    }
+
+    /**
+     * 맛집 검색 결과를 담는 내부 클래스
+     */
+    @lombok.Getter
+    private static class RestaurantSearchResult {
+        private final List<Restaurant> favoriteRestaurants;
+        private final List<Restaurant> aiRecommendedRestaurants;
+
+        public RestaurantSearchResult(List<Restaurant> favoriteRestaurants,
+                                     List<Restaurant> aiRecommendedRestaurants) {
+            this.favoriteRestaurants = favoriteRestaurants != null ? favoriteRestaurants : Collections.emptyList();
+            this.aiRecommendedRestaurants = aiRecommendedRestaurants != null ? aiRecommendedRestaurants : Collections.emptyList();
+        }
+
+        public boolean isEmpty() {
+            return favoriteRestaurants.isEmpty() && aiRecommendedRestaurants.isEmpty();
+        }
+
+        public int getTotalCount() {
+            return favoriteRestaurants.size() + aiRecommendedRestaurants.size();
+        }
     }
 }

@@ -53,4 +53,34 @@ public class Restaurant {
      */
     @Column(columnDefinition = "TEXT")
     private String keywords;
+
+    /**
+     * 평점 (0.0 ~ 5.0)
+     */
+    @Column(name = "rating")
+    private Double rating;
+
+    /**
+     * 이미지 URL
+     */
+    @Column(name = "image_url", length = 500)
+    private String imageUrl;
+
+    /**
+     * 위도 (거리 계산용)
+     */
+    @Column(name = "latitude")
+    private Double latitude;
+
+    /**
+     * 경도 (거리 계산용)
+     */
+    @Column(name = "longitude")
+    private Double longitude;
+
+    /**
+     * 거리 텍스트 (예: "도보 5분")
+     */
+    @Column(name = "distance_text", length = 50)
+    private String distanceText;
 }

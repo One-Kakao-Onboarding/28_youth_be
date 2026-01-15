@@ -1,5 +1,6 @@
 package com.example.onboarding.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.*;
 
 /**
@@ -24,12 +25,12 @@ public class RestaurantDto {
     private String name;
 
     /**
-     * 음식 카테고리
+     * 음식 카테고리 (예: "한식 • 백반")
      */
     private String category;
 
     /**
-     * 위치 정보
+     * 위치 정보 (백엔드용)
      */
     private String locationText;
 
@@ -37,4 +38,28 @@ public class RestaurantDto {
      * 맛집 설명
      */
     private String description;
+
+    /**
+     * 평점 (0.0 ~ 5.0)
+     */
+    @JsonProperty("rating")
+    private Double rating;
+
+    /**
+     * 주소 (프론트엔드용, locationText와 동일)
+     */
+    @JsonProperty("address")
+    private String address;
+
+    /**
+     * 이미지 URL
+     */
+    @JsonProperty("image")
+    private String image;
+
+    /**
+     * 거리 정보 (예: "도보 5분")
+     */
+    @JsonProperty("distance")
+    private String distance;
 }

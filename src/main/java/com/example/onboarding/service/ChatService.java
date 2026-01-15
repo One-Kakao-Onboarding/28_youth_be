@@ -84,7 +84,7 @@ public class ChatService {
 
             // TALK 타입 메시지인 경우 LLM 분석 트리거 (비동기)
             if (savedMessage.getType() == MessageType.TALK) {
-                suggestionService.analyzeMessageAndSuggest(savedMessage);
+                suggestionService.analyzeMessage(savedMessage);
             }
 
         } catch (Exception e) {

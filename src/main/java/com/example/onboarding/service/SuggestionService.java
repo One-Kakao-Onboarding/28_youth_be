@@ -1,6 +1,7 @@
 package com.example.onboarding.service;
 
 import com.example.onboarding.dto.ClaudeAnalysisResult;
+import com.example.onboarding.dto.RecommendationPromptDto;
 import com.example.onboarding.dto.RestaurantDto;
 import com.example.onboarding.dto.SuggestionDto;
 import com.example.onboarding.entity.ChatMessage;
@@ -8,22 +9,25 @@ import com.example.onboarding.entity.Restaurant;
 import com.example.onboarding.repository.ChatMessageRepository;
 import com.example.onboarding.repository.RestaurantRepository;
 import com.example.onboarding.websocket.UserSessionChannelInterceptor;
+import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.scheduling.annotation.Async;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
  * 맛집 추천 서비스
- * - Claude AI 분석 및 맛집 추천 (비동기 처리)
+ * - Claude AI 분석 및 맛집 추천 (2단계 프로세스)
+ * - 1단계: 분석 후 추천 가능 알림
+ * - 2단계: 사용자 요청 시 실제 추천 제공
  */
 @Slf4j
 @Service
@@ -38,16 +42,25 @@ public class SuggestionService {
 
     private static final int CONTEXT_MESSAGE_LIMIT = 10;
     private static final double CONFIDENCE_THRESHOLD = 0.6;
+    private static final int ANALYSIS_CACHE_EXPIRE_MINUTES = 5;
 
     /**
-     * 메시지 분석 및 맛집 추천 (비동기)
+     * 분석 결과 임시 저장소 (인메모리 캐시)
+     * Key: analysisId (UUID)
+     * Value: AnalysisCacheEntry
+     */
+    private final ConcurrentHashMap<String, AnalysisCacheEntry> analysisCache = new ConcurrentHashMap<>();
+
+    /**
+     * 1단계: 메시지 분석 (비동기)
      * - Claude AI로 메시지를 분석하여 맛집 추천 필요 여부 판단
-     * - 추천 결과를 해당 사용자에게만 Private으로 전송
+     * - shouldRecommend=true이면 분석 결과를 캐시에 저장하고 프롬프트 전송
+     * - 실제 맛집 검색은 하지 않음 (사용자 요청 대기)
      *
      * @param message 분석할 메시지
      */
     @Async
-    public void analyzeMessageAndSuggest(ChatMessage message) {
+    public void analyzeMessage(ChatMessage message) {
         try {
             log.info("Starting Claude analysis for message: {}", message.getId());
 
@@ -81,27 +94,94 @@ public class SuggestionService {
                 return;
             }
 
-            // 4. 맛집 검색 (수정된 전략)
-            RestaurantSearchResult searchResult = searchRestaurants(analysis, message.getSenderId().toString());
+            // 4. 분석 결과를 캐시에 저장
+            String analysisId = UUID.randomUUID().toString();
+            AnalysisCacheEntry cacheEntry = new AnalysisCacheEntry();
+            cacheEntry.setAnalysis(analysis);
+            cacheEntry.setUserId(message.getSenderId().toString());
+            cacheEntry.setCreatedAt(LocalDateTime.now());
+            cacheEntry.setMessageId(message.getId());
+            cacheEntry.setProcessed(false);
 
-            if (searchResult.isEmpty()) {
-                log.info("No restaurants found for analysis: {}", analysis);
-                return;
-            }
+            analysisCache.put(analysisId, cacheEntry);
 
-            // 5. 사용자에게 추천 전송
-            sendSuggestionToUser(
+            log.info("Analysis cached - analysisId: {}, userId: {}", analysisId, message.getSenderId());
+
+            // 5. 사용자에게 추천 가능 알림 전송
+            sendRecommendationPrompt(
                     message.getSenderId().toString(),
-                    searchResult,
+                    analysisId,
                     analysis
             );
 
-            log.info("Suggestion sent to user: {}, count: {}",
-                    message.getSenderId(),
-                    searchResult.getTotalCount());
+            log.info("Recommendation prompt sent to user: {}", message.getSenderId());
 
         } catch (Exception e) {
-            log.error("Failed to analyze message and suggest restaurants", e);
+            log.error("Failed to analyze message", e);
+        }
+    }
+
+    /**
+     * 2단계: 맛집 추천 제공
+     * - 클라이언트가 추천을 요청하면 캐시에서 분석 결과를 가져와 맛집 검색 및 추천
+     *
+     * @param analysisId 분석 결과 식별자
+     * @param userId 요청 사용자 ID
+     */
+    public void provideRecommendation(String analysisId, String userId) {
+        try {
+            log.info("Recommendation requested - analysisId: {}, userId: {}", analysisId, userId);
+
+            // 1. 캐시에서 분석 결과 가져오기
+            AnalysisCacheEntry cacheEntry = analysisCache.get(analysisId);
+
+            if (cacheEntry == null) {
+                log.warn("Analysis not found in cache - analysisId: {}", analysisId);
+                sendErrorMessage(userId, "추천 요청이 만료되었습니다. 다시 시도해주세요.");
+                return;
+            }
+
+            // 2. 이미 처리된 요청인지 확인
+            if (cacheEntry.isProcessed()) {
+                log.warn("Analysis already processed - analysisId: {}", analysisId);
+                sendErrorMessage(userId, "이미 처리된 요청입니다.");
+                return;
+            }
+
+            // 3. 사용자 ID 검증
+            if (!cacheEntry.getUserId().equals(userId)) {
+                log.warn("User ID mismatch - expected: {}, actual: {}", cacheEntry.getUserId(), userId);
+                sendErrorMessage(userId, "잘못된 요청입니다.");
+                return;
+            }
+
+            // 4. 처리 완료 표시
+            cacheEntry.setProcessed(true);
+
+            // 5. 맛집 검색
+            ClaudeAnalysisResult analysis = cacheEntry.getAnalysis();
+            RestaurantSearchResult searchResult = searchRestaurants(analysis, userId);
+
+            if (searchResult.isEmpty()) {
+                log.info("No restaurants found for analysis: {}", analysis);
+                sendErrorMessage(userId, "추천 가능한 맛집을 찾지 못했습니다.");
+                // 캐시에서 제거
+                analysisCache.remove(analysisId);
+                return;
+            }
+
+            // 6. 사용자에게 추천 전송
+            sendSuggestionToUser(userId, searchResult, analysis);
+
+            log.info("Recommendation provided - analysisId: {}, userId: {}, count: {}",
+                    analysisId, userId, searchResult.getTotalCount());
+
+            // 7. 캐시에서 제거 (사용 완료)
+            analysisCache.remove(analysisId);
+
+        } catch (Exception e) {
+            log.error("Failed to provide recommendation", e);
+            sendErrorMessage(userId, "추천 처리 중 오류가 발생했습니다.");
         }
     }
 
@@ -288,6 +368,113 @@ public class SuggestionService {
         title.append("맛집 추천 리스트");
 
         return title.toString();
+    }
+
+    /**
+     * 추천 가능 알림 전송
+     */
+    private void sendRecommendationPrompt(String userId, String analysisId, ClaudeAnalysisResult analysis) {
+        try {
+            RecommendationPromptDto promptDto = RecommendationPromptDto.builder()
+                    .type("recommendation-prompt")
+                    .message("맛집 추천이 가능합니다")
+                    .analysisId(analysisId)
+                    .location(analysis.getLocation())
+                    .mealType(analysis.getMealType())
+                    .confidence(analysis.getConfidence())
+                    .time(LocalDateTime.now().format(
+                            DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN)))
+                    .build();
+
+            // 해당 사용자의 sessionId 조회
+            String sessionId = sessionInterceptor.getSessionIdByUserId(userId);
+
+            if (sessionId != null) {
+                // Private 메시지 전송 (새로운 채널)
+                messagingTemplate.convertAndSendToUser(
+                        sessionId,
+                        "/queue/recommendation-prompt",
+                        promptDto
+                );
+
+                log.info("Recommendation prompt sent - userId: {}, analysisId: {}", userId, analysisId);
+            } else {
+                log.warn("Session not found for userId: {}", userId);
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to send recommendation prompt to user: {}", userId, e);
+        }
+    }
+
+    /**
+     * 에러 메시지 전송
+     */
+    private void sendErrorMessage(String userId, String errorMessage) {
+        try {
+            Map<String, String> error = Map.of(
+                    "type", "error",
+                    "message", errorMessage,
+                    "time", LocalDateTime.now().format(
+                            DateTimeFormatter.ofPattern("a h:mm", Locale.KOREAN))
+            );
+
+            String sessionId = sessionInterceptor.getSessionIdByUserId(userId);
+
+            if (sessionId != null) {
+                messagingTemplate.convertAndSendToUser(
+                        sessionId,
+                        "/queue/errors",
+                        error
+                );
+
+                log.info("Error message sent - userId: {}, message: {}", userId, errorMessage);
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to send error message to user: {}", userId, e);
+        }
+    }
+
+    /**
+     * 만료된 분석 결과 정리 스케줄러
+     * - 매 1분마다 실행
+     * - 5분 이상 경과한 분석 결과 삭제
+     */
+    @Scheduled(fixedRate = 60000)
+    public void cleanupExpiredAnalysis() {
+        try {
+            LocalDateTime expiryTime = LocalDateTime.now().minusMinutes(ANALYSIS_CACHE_EXPIRE_MINUTES);
+            int removedCount = 0;
+
+            Iterator<Map.Entry<String, AnalysisCacheEntry>> iterator = analysisCache.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, AnalysisCacheEntry> entry = iterator.next();
+                if (entry.getValue().getCreatedAt().isBefore(expiryTime)) {
+                    iterator.remove();
+                    removedCount++;
+                }
+            }
+
+            if (removedCount > 0) {
+                log.info("Cleaned up {} expired analysis results", removedCount);
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to cleanup expired analysis", e);
+        }
+    }
+
+    /**
+     * 분석 결과 캐시 엔트리 내부 클래스
+     */
+    @Data
+    private static class AnalysisCacheEntry {
+        private ClaudeAnalysisResult analysis;
+        private String userId;
+        private LocalDateTime createdAt;
+        private Long messageId;
+        private boolean processed;
     }
 
     /**
